@@ -39,6 +39,10 @@ _TAX_YEAR_BUSINESS_MILES_ALT_RE = re.compile(
     r"Business\s+Miles?\s+Tax\s+Year[^\d]{0,40}([\d.,]+)",
     re.IGNORECASE,
 )
+_TAX_YEAR_CUMULATIVE_BUSINESS_MILES_RE = re.compile(
+    r"Cumulative\s+Business\s+Mileage[:\s]+([\d.,]+)",
+    re.IGNORECASE,
+)
 _CAR_REG_RE = re.compile(r"Car:\s*([A-Z0-9]{1,8})", re.IGNORECASE)
 _CURRENT_VEHICLE_RE = re.compile(
     r"Current\s+Vehicle[^\w]{0,20}([A-Z0-9]{1,8})",
@@ -46,6 +50,10 @@ _CURRENT_VEHICLE_RE = re.compile(
 )
 _VEHICLE_REG_RE = re.compile(
     r"(?:Vehicle|Registration|Reg)[:\s]+([A-Z0-9]{1,8})",
+    re.IGNORECASE,
+)
+_REGISTRATION_NUMBER_RE = re.compile(
+    r"Registration\s+Number[:\s]+([A-Z0-9]{1,8})",
     re.IGNORECASE,
 )
 _OPENING_ODOMETER_RE = re.compile(
@@ -142,8 +150,10 @@ def parse_home_snapshot(html: str) -> HomeSnapshot:
         business_miles_match.group(1) if business_miles_match else None
     )
 
-    tax_year_match = _TAX_YEAR_BUSINESS_MILES_RE.search(text) or _TAX_YEAR_BUSINESS_MILES_ALT_RE.search(
-        text
+    tax_year_match = (
+        _TAX_YEAR_BUSINESS_MILES_RE.search(text)
+        or _TAX_YEAR_BUSINESS_MILES_ALT_RE.search(text)
+        or _TAX_YEAR_CUMULATIVE_BUSINESS_MILES_RE.search(text)
     )
     total_business_miles_tax_year = _parse_number(
         tax_year_match.group(1) if tax_year_match else None
@@ -151,6 +161,7 @@ def parse_home_snapshot(html: str) -> HomeSnapshot:
 
     car_match = (
         _CAR_REG_RE.search(text)
+        or _REGISTRATION_NUMBER_RE.search(text)
         or _CURRENT_VEHICLE_RE.search(text)
         or _VEHICLE_REG_RE.search(text)
     )
