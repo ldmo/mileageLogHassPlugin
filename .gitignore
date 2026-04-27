@@ -1,1 +1,14 @@
 reference/
+
+# Python bytecode / build artifacts (must not ship via HACS)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS / editor cruft
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
