@@ -1,6 +1,7 @@
 {
   "name": "Traxmiles",
   "content_in_root": false,
+  "domains": ["traxmiles"],
   "render_readme": true,
   "country": [
     "GB"
