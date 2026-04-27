@@ -1,0 +1,288 @@
+"""Traxmiles HTTP client."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC, datetime
+import logging
+import re
+from typing import Any
+
+from aiohttp import ClientResponse, ClientSession
+from bs4 import BeautifulSoup
+
+from .const import HOME_URL, LOGIN_URL, SESSION_STALE_SECONDS, USER_AGENT
+
+_LOGGER = logging.getLogger(__name__)
+
+_OPEN_LOCKED_MONTH_RE = re.compile(
+    r"(Open|Locked)\s+Record\s*[-–]\s*([A-Za-z]+\s+\d{4})", re.IGNORECASE
+)
+_CLAIMS_MONTH_RE = re.compile(r"Claims\s+For\s+([A-Za-z]+\s+\d{4})", re.IGNORECASE)
+_THIS_MONTH_BUSINESS_MILES_RE = re.compile(
+    r"This\s+Month[^\d]{0,80}Business\s+Mileage[^\d]{0,40}([\d.,]+)",
+    re.IGNORECASE,
+)
+_THIS_MONTH_BUSINESS_MILES_FALLBACK_RE = re.compile(
+    r"Business\s+Mileage\s+This\s+Month[^\d]{0,40}([\d.,]+)",
+    re.IGNORECASE,
+)
+_TAX_YEAR_BUSINESS_MILES_RE = re.compile(
+    r"Total\s+Business\s+Mileage\s+This\s+Tax\s+Year[^\d]{0,40}([\d.,]+)",
+    re.IGNORECASE,
+)
+_CAR_REG_RE = re.compile(r"Car:\s*([A-Z0-9]{1,8})", re.IGNORECASE)
+_OPENING_ODOMETER_RE = re.compile(
+    r"Opening\s+odometer[:\s]+([\d.,]+)\s*mi",
+    re.IGNORECASE,
+)
+_RECORD_ID_RE = re.compile(r"/log/(\d+)(?:[/?#]|$)", re.IGNORECASE)
+
+
+class TraxmilesError(Exception):
+    """Base Traxmiles client exception."""
+
+
+class TraxmilesAuthError(TraxmilesError):
+    """Raised when authentication fails."""
+
+
+@dataclass(slots=True)
+class HomeSnapshot:
+    """Parsed `/home` payload."""
+
+    csrf_token: str
+    record_id: str | None
+    open_record_month: str | None
+    is_locked: bool
+    business_miles_this_month: float | None
+    total_business_miles_tax_year: float | None
+    opening_odometer: float | None
+    vehicle_registration: str | None
+    raw_html: str
+    fetched_at: datetime
+
+
+def extract_csrf_token(html: str) -> str | None:
+    """Extract a CSRF token from HTML."""
+    soup = BeautifulSoup(html, "html.parser")
+    meta_tag = soup.find("meta", attrs={"name": "csrf-token"})
+    if meta_tag and meta_tag.get("content"):
+        return str(meta_tag["content"])
+
+    token_input = soup.find("input", attrs={"name": "_token"})
+    if token_input and token_input.get("value"):
+        return str(token_input["value"])
+
+    return None
+
+
+def extract_edit_lock_url(html: str) -> str | None:
+    """Extract the current edit/lock URL from /home HTML."""
+    soup = BeautifulSoup(html, "html.parser")
+    for anchor in soup.find_all("a"):
+        text = anchor.get_text(" ", strip=True)
+        if re.match(r"^edit\s*/\s*lock\s+record$", text, re.IGNORECASE):
+            href = anchor.get("href")
+            return str(href) if href else None
+    return None
+
+
+def parse_record_id(edit_lock_url: str | None) -> str | None:
+    """Extract record id from `/log/<id>` URL."""
+    if not edit_lock_url:
+        return None
+    match = _RECORD_ID_RE.search(edit_lock_url)
+    return match.group(1) if match else None
+
+
+def parse_home_snapshot(html: str) -> HomeSnapshot:
+    """Parse the authenticated `/home` page."""
+    csrf_token = extract_csrf_token(html)
+    if not csrf_token:
+        raise TraxmilesError("CSRF token missing from /home HTML")
+
+    text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
+    text = re.sub(r"\s+", " ", text)
+
+    record_state_match = _OPEN_LOCKED_MONTH_RE.search(text)
+    if record_state_match:
+        is_locked = record_state_match.group(1).lower() == "locked"
+        open_record_month = record_state_match.group(2)
+    else:
+        is_locked = False
+        fallback_month = _CLAIMS_MONTH_RE.search(text)
+        open_record_month = fallback_month.group(1) if fallback_month else None
+
+    edit_lock_url = extract_edit_lock_url(html)
+    record_id = parse_record_id(edit_lock_url)
+
+    business_miles_match = (
+        _THIS_MONTH_BUSINESS_MILES_RE.search(text)
+        or _THIS_MONTH_BUSINESS_MILES_FALLBACK_RE.search(text)
+    )
+    business_miles_this_month = _parse_number(
+        business_miles_match.group(1) if business_miles_match else None
+    )
+
+    tax_year_match = _TAX_YEAR_BUSINESS_MILES_RE.search(text)
+    total_business_miles_tax_year = _parse_number(
+        tax_year_match.group(1) if tax_year_match else None
+    )
+
+    car_match = _CAR_REG_RE.search(text)
+    vehicle_registration = car_match.group(1).upper() if car_match else None
+
+    opening_odometer_match = _OPENING_ODOMETER_RE.search(text)
+    opening_odometer = _parse_number(
+        opening_odometer_match.group(1) if opening_odometer_match else None
+    )
+
+    return HomeSnapshot(
+        csrf_token=csrf_token,
+        record_id=record_id,
+        open_record_month=open_record_month,
+        is_locked=is_locked,
+        business_miles_this_month=business_miles_this_month,
+        total_business_miles_tax_year=total_business_miles_tax_year,
+        opening_odometer=opening_odometer,
+        vehicle_registration=vehicle_registration,
+        raw_html=html,
+        fetched_at=datetime.now(UTC),
+    )
+
+
+def _parse_number(raw: str | None) -> float | None:
+    if not raw:
+        return None
+    try:
+        return float(raw.replace(",", ""))
+    except ValueError:
+        return None
+
+
+class TraxmilesClient:
+    """Client for Traxmiles web endpoints."""
+
+    def __init__(self, session: ClientSession, email: str, password: str) -> None:
+        self._session = session
+        self._email = email
+        self._password = password
+        self._csrf_token: str | None = None
+        self._last_validated: datetime | None = None
+
+    async def login(self) -> None:
+        """Perform login flow and cache CSRF token."""
+        login_page = await self._request("GET", LOGIN_URL)
+        login_html = await login_page.text()
+        csrf_token = extract_csrf_token(login_html)
+        if not csrf_token:
+            raise TraxmilesAuthError("Unable to extract login CSRF token")
+
+        payload = {
+            "_token": csrf_token,
+            "email": self._email,
+            "password": self._password,
+        }
+        await self._request(
+            "POST",
+            LOGIN_URL,
+            data=payload,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "https://traxmiles.co.uk",
+                "Referer": LOGIN_URL,
+            },
+        )
+
+        home_response = await self._request("GET", HOME_URL, allow_login_redirect_check=True)
+        if self._is_login_redirect(home_response):
+            raise TraxmilesAuthError("Credentials rejected by Traxmiles")
+
+        home_html = await home_response.text()
+        home_csrf = extract_csrf_token(home_html)
+        if not home_csrf:
+            raise TraxmilesAuthError("Authenticated /home response had no CSRF token")
+
+        self._csrf_token = home_csrf
+        self._last_validated = datetime.now(UTC)
+
+    async def ensure_session(self) -> None:
+        """Ensure a valid session exists."""
+        now = datetime.now(UTC)
+        if (
+            self._last_validated is None
+            or (now - self._last_validated).total_seconds() > SESSION_STALE_SECONDS
+        ):
+            await self.login()
+
+    async def fetch_home(self) -> HomeSnapshot:
+        """Fetch and parse /home after ensuring session."""
+        await self.ensure_session()
+
+        home_response = await self._request("GET", HOME_URL, allow_login_redirect_check=True)
+        if self._is_login_redirect(home_response):
+            await self.login()
+            home_response = await self._request(
+                "GET", HOME_URL, allow_login_redirect_check=True
+            )
+            if self._is_login_redirect(home_response):
+                raise TraxmilesAuthError("Session invalid after re-login attempt")
+
+        home_html = await home_response.text()
+        snapshot = parse_home_snapshot(home_html)
+        self._csrf_token = snapshot.csrf_token
+        self._last_validated = datetime.now(UTC)
+        return snapshot
+
+    async def validate_credentials(self) -> None:
+        """Validate credentials using the full login probe."""
+        await self.login()
+
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        data: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        allow_login_redirect_check: bool = False,
+    ) -> ClientResponse:
+        req_headers = {
+            "User-Agent": USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        if headers:
+            req_headers.update(headers)
+
+        response = await self._session.request(
+            method,
+            url,
+            headers=req_headers,
+            data=data,
+            allow_redirects=False,
+        )
+
+        if response.status >= 500:
+            body = await response.text()
+            raise TraxmilesError(
+                f"Traxmiles server error {response.status}: {body[:200].strip()}"
+            )
+
+        if response.status == 401:
+            body = await response.text()
+            raise TraxmilesAuthError(f"Unauthenticated: {body[:200].strip()}")
+
+        if response.status == 302 and not allow_login_redirect_check:
+            location = response.headers.get("Location", "")
+            if "/login" in location:
+                raise TraxmilesAuthError("Redirected to /login")
+
+        return response
+
+    @staticmethod
+    def _is_login_redirect(response: ClientResponse) -> bool:
+        if response.status != 302:
+            return False
+        location = response.headers.get("Location", "")
+        return "/login" in location

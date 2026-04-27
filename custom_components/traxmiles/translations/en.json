@@ -1,0 +1,53 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect Traxmiles",
+        "description": "Enter your Traxmiles credentials.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid credentials",
+      "cannot_connect": "Cannot connect",
+      "unknown": "Unexpected error"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Traxmiles options",
+        "data": {
+          "update_interval_seconds": "Update interval (seconds)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "business_miles_this_month": {
+        "name": "Business miles this month"
+      },
+      "total_business_miles_tax_year": {
+        "name": "Business miles tax year"
+      },
+      "opening_odometer": {
+        "name": "Opening odometer"
+      },
+      "vehicle_registration": {
+        "name": "Current vehicle"
+      },
+      "open_record_month": {
+        "name": "Open record month"
+      }
+    },
+    "binary_sensor": {
+      "record_locked": {
+        "name": "Record locked"
+      }
+    }
+  }
+}
