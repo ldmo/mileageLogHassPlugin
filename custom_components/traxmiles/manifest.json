@@ -1,16 +1,13 @@
 {
   "domain": "traxmiles",
   "name": "Traxmiles",
-  "codeowners": [
-    "@lukemoseley"
-  ],
+  "codeowners": ["@ldmo"],
   "config_flow": true,
-  "documentation": "https://github.com/lukemoseley/mileageLogHassPlugin",
+  "documentation": "https://github.com/ldmo/mileageLogHassPlugin",
+  "issue_tracker": "https://github.com/ldmo/mileageLogHassPlugin/issues",
   "integration_type": "service",
   "iot_class": "cloud_polling",
-  "loggers": [
-    "custom_components.traxmiles"
-  ],
+  "loggers": ["custom_components.traxmiles"],
   "requirements": [],
   "version": "0.1.0"
 }
