@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import asyncio
 import logging
 import re
+from urllib.parse import urlencode
 from typing import Any
 
 from aiohttp import ClientResponse, ClientSession
@@ -69,6 +71,10 @@ class TraxmilesError(Exception):
 
 class TraxmilesAuthError(TraxmilesError):
     """Raised when authentication fails."""
+
+
+class TraxmilesValidationError(TraxmilesError):
+    """Raised when Traxmiles rejects form validation."""
 
 
 @dataclass(slots=True)
@@ -219,6 +225,7 @@ class TraxmilesClient:
         self._password = password
         self._csrf_token: str | None = None
         self._last_validated: datetime | None = None
+        self._request_lock = asyncio.Lock()
 
     async def login(self) -> None:
         """Perform login flow and cache CSRF token."""
@@ -267,48 +274,157 @@ class TraxmilesClient:
 
     async def fetch_home(self) -> HomeSnapshot:
         """Fetch and parse /home after ensuring session."""
-        await self.ensure_session()
+        async with self._request_lock:
+            await self.ensure_session()
 
+            home_response = await self._request("GET", HOME_URL, allow_login_redirect_check=True)
+            if self._is_login_redirect(home_response):
+                await self.login()
+                home_response = await self._request(
+                    "GET", HOME_URL, allow_login_redirect_check=True
+                )
+                if self._is_login_redirect(home_response):
+                    raise TraxmilesAuthError("Session invalid after re-login attempt")
+
+            home_html = await home_response.text()
+            snapshot = parse_home_snapshot(home_html)
+
+            # Some accounts render "business miles this month" only on /log/<id>.
+            if snapshot.business_miles_this_month is None:
+                edit_lock_url = extract_edit_lock_url(home_html)
+                if edit_lock_url:
+                    log_url = self._absolute_url(edit_lock_url)
+                    try:
+                        log_response = await self._request(
+                            "GET",
+                            log_url,
+                            headers={"Referer": HOME_URL},
+                            allow_login_redirect_check=True,
+                        )
+                        if not self._is_login_redirect(log_response):
+                            log_html = await log_response.text()
+                            log_text = re.sub(
+                                r"\s+",
+                                " ",
+                                BeautifulSoup(log_html, "html.parser").get_text(" ", strip=True),
+                            )
+                            business_miles = _extract_business_miles_this_month(log_text)
+                            if business_miles is not None:
+                                snapshot.business_miles_this_month = business_miles
+                    except TraxmilesError:
+                        _LOGGER.debug(
+                            "Unable to read business miles from /log page", exc_info=True
+                        )
+
+            self._csrf_token = snapshot.csrf_token
+            self._last_validated = datetime.now(UTC)
+            return snapshot
+
+    async def lock_and_submit(self, *, closing_odometer: float) -> dict[str, str | HomeSnapshot]:
+        """Lock and submit the current record."""
+        if closing_odometer <= 0:
+            raise TraxmilesValidationError("Closing odometer must be a positive number")
+
+        async with self._request_lock:
+            await self.ensure_session()
+            return await self._lock_and_submit_with_retry(
+                closing_odometer=closing_odometer,
+                login_retry=True,
+                csrf_retry=True,
+            )
+
+    async def _lock_and_submit_with_retry(
+        self,
+        *,
+        closing_odometer: float,
+        login_retry: bool,
+        csrf_retry: bool,
+    ) -> dict[str, str | HomeSnapshot]:
         home_response = await self._request("GET", HOME_URL, allow_login_redirect_check=True)
         if self._is_login_redirect(home_response):
+            if not login_retry:
+                raise TraxmilesAuthError("Redirected to /login before submit")
             await self.login()
-            home_response = await self._request(
-                "GET", HOME_URL, allow_login_redirect_check=True
+            return await self._lock_and_submit_with_retry(
+                closing_odometer=closing_odometer,
+                login_retry=False,
+                csrf_retry=csrf_retry,
             )
-            if self._is_login_redirect(home_response):
-                raise TraxmilesAuthError("Session invalid after re-login attempt")
 
         home_html = await home_response.text()
         snapshot = parse_home_snapshot(home_html)
-
-        # Some accounts render "business miles this month" only on /log/<id>.
-        if snapshot.business_miles_this_month is None:
-            edit_lock_url = extract_edit_lock_url(home_html)
-            if edit_lock_url:
-                log_url = self._absolute_url(edit_lock_url)
-                try:
-                    log_response = await self._request(
-                        "GET",
-                        log_url,
-                        headers={"Referer": HOME_URL},
-                        allow_login_redirect_check=True,
-                    )
-                    if not self._is_login_redirect(log_response):
-                        log_html = await log_response.text()
-                        log_text = re.sub(
-                            r"\s+",
-                            " ",
-                            BeautifulSoup(log_html, "html.parser").get_text(" ", strip=True),
-                        )
-                        business_miles = _extract_business_miles_this_month(log_text)
-                        if business_miles is not None:
-                            snapshot.business_miles_this_month = business_miles
-                except TraxmilesError:
-                    _LOGGER.debug("Unable to read business miles from /log page", exc_info=True)
-
         self._csrf_token = snapshot.csrf_token
         self._last_validated = datetime.now(UTC)
-        return snapshot
+
+        if not snapshot.record_id:
+            raise TraxmilesError("Could not determine current record ID from /home")
+
+        submit_url = f"https://traxmiles.co.uk/log/update/{snapshot.record_id}"
+        referer = self._absolute_url(extract_edit_lock_url(home_html) or f"/log/{snapshot.record_id}")
+        payload = urlencode(
+            {
+                "_method": "PATCH",
+                "_token": snapshot.csrf_token,
+                "closing_odometer": str(closing_odometer),
+                "terms_and_conditions": "1",
+            }
+        )
+
+        submit_response = await self._request(
+            "POST",
+            submit_url,
+            data=payload,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "https://traxmiles.co.uk",
+                "Referer": referer,
+            },
+            allow_login_redirect_check=True,
+        )
+        submit_body = await submit_response.text()
+
+        if submit_response.status == 419:
+            if not csrf_retry:
+                raise TraxmilesError("CSRF mismatch while submitting closing odometer")
+            await self.login()
+            return await self._lock_and_submit_with_retry(
+                closing_odometer=closing_odometer,
+                login_retry=login_retry,
+                csrf_retry=False,
+            )
+
+        if submit_response.status == 401 or self._is_login_redirect(submit_response):
+            if not login_retry:
+                raise TraxmilesAuthError("Session expired while submitting closing odometer")
+            await self.login()
+            return await self._lock_and_submit_with_retry(
+                closing_odometer=closing_odometer,
+                login_retry=False,
+                csrf_retry=csrf_retry,
+            )
+
+        if submit_response.status == 422:
+            first_msg = self._parse_validation_message(submit_body)
+            raise TraxmilesValidationError(first_msg or "Traxmiles rejected submitted odometer")
+
+        body_preview = submit_body[:500].lower()
+        if submit_response.status not in (200, 302) or any(
+            token in body_preview for token in ("error", "invalid", "required")
+        ):
+            raise TraxmilesError(
+                f"Submit failed (HTTP {submit_response.status}): {submit_body[:200].strip()}"
+            )
+
+        refreshed_home_response = await self._request(
+            "GET", HOME_URL, allow_login_redirect_check=True
+        )
+        if self._is_login_redirect(refreshed_home_response):
+            raise TraxmilesAuthError("Session expired immediately after submit")
+        refreshed_home_html = await refreshed_home_response.text()
+        refreshed_snapshot = parse_home_snapshot(refreshed_home_html)
+        self._csrf_token = refreshed_snapshot.csrf_token
+        self._last_validated = datetime.now(UTC)
+        return {"record_id": snapshot.record_id, "snapshot": refreshed_snapshot}
 
     async def validate_credentials(self) -> None:
         """Validate credentials using the full login probe."""
@@ -369,3 +485,10 @@ class TraxmilesClient:
         if url.startswith("/"):
             return f"https://traxmiles.co.uk{url}"
         return f"https://traxmiles.co.uk/{url}"
+
+    @staticmethod
+    def _parse_validation_message(raw_body: str) -> str | None:
+        match = re.search(r'"errors"\s*:\s*\{\s*"[^"]+"\s*:\s*\[\s*"([^"]+)"', raw_body)
+        if match:
+            return match.group(1)
+        return None

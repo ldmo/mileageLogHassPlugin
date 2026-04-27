@@ -1,0 +1,32 @@
+lock_and_submit:
+  name: Lock and submit
+  description: Lock the current Traxmiles month with a closing odometer reading.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Config entry ID when multiple Traxmiles accounts are configured.
+      example: "0123456789abcdef"
+      required: false
+      selector:
+        text:
+    closing_odometer:
+      name: Closing odometer
+      description: Closing odometer reading in miles.
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 9999999
+          step: 1
+          unit_of_measurement: mi
+          mode: box
+    source:
+      name: Source
+      description: manual or automation. Automation calls are gated by auto-submit switch.
+      required: false
+      default: automation
+      selector:
+        select:
+          options:
+            - manual
+            - automation

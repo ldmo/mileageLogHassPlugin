@@ -21,7 +21,8 @@
       "init": {
         "title": "Traxmiles options",
         "data": {
-          "update_interval_seconds": "Update interval (seconds)"
+          "update_interval_seconds": "Update interval (seconds)",
+          "auto_submit_enabled": "Auto-submit enabled"
         }
       }
     }
@@ -47,6 +48,21 @@
     "binary_sensor": {
       "record_locked": {
         "name": "Record locked"
+      }
+    },
+    "number": {
+      "closing_odometer": {
+        "name": "Closing odometer"
+      }
+    },
+    "switch": {
+      "auto_submit_allowed": {
+        "name": "Auto submit allowed"
+      }
+    },
+    "button": {
+      "lock_and_submit": {
+        "name": "Lock and submit"
       }
     }
   }

@@ -16,12 +16,14 @@ from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
 from .client import TraxmilesAuthError, TraxmilesClient, TraxmilesError
 from .const import (
+    CONF_AUTO_SUBMIT_ENABLED,
     CONF_EMAIL,
     CONF_UPDATE_INTERVAL_SECONDS,
     DEFAULT_UPDATE_INTERVAL_SECONDS,
     DOMAIN,
     MAX_UPDATE_INTERVAL_SECONDS,
     MIN_UPDATE_INTERVAL_SECONDS,
+    DEFAULT_AUTO_SUBMIT_ENABLED,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -106,7 +108,14 @@ class TraxmilesOptionsFlow(config_entries.OptionsFlow):
                             min=MIN_UPDATE_INTERVAL_SECONDS,
                             max=MAX_UPDATE_INTERVAL_SECONDS,
                         ),
-                    )
+                    ),
+                    vol.Optional(
+                        CONF_AUTO_SUBMIT_ENABLED,
+                        default=self._entry.options.get(
+                            CONF_AUTO_SUBMIT_ENABLED,
+                            DEFAULT_AUTO_SUBMIT_ENABLED,
+                        ),
+                    ): bool,
                 }
             ),
         )
