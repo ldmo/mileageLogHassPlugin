@@ -27,11 +27,27 @@ _THIS_MONTH_BUSINESS_MILES_FALLBACK_RE = re.compile(
     r"Business\s+Mileage\s+This\s+Month[^\d]{0,40}([\d.,]+)",
     re.IGNORECASE,
 )
+_THIS_MONTH_BUSINESS_MILES_ALT_RE = re.compile(
+    r"Business\s+Miles?\s+This\s+Month[^\d]{0,40}([\d.,]+)",
+    re.IGNORECASE,
+)
 _TAX_YEAR_BUSINESS_MILES_RE = re.compile(
     r"Total\s+Business\s+Mileage\s+This\s+Tax\s+Year[^\d]{0,40}([\d.,]+)",
     re.IGNORECASE,
 )
+_TAX_YEAR_BUSINESS_MILES_ALT_RE = re.compile(
+    r"Business\s+Miles?\s+Tax\s+Year[^\d]{0,40}([\d.,]+)",
+    re.IGNORECASE,
+)
 _CAR_REG_RE = re.compile(r"Car:\s*([A-Z0-9]{1,8})", re.IGNORECASE)
+_CURRENT_VEHICLE_RE = re.compile(
+    r"Current\s+Vehicle[^\w]{0,20}([A-Z0-9]{1,8})",
+    re.IGNORECASE,
+)
+_VEHICLE_REG_RE = re.compile(
+    r"(?:Vehicle|Registration|Reg)[:\s]+([A-Z0-9]{1,8})",
+    re.IGNORECASE,
+)
 _OPENING_ODOMETER_RE = re.compile(
     r"Opening\s+odometer[:\s]+([\d.,]+)\s*mi",
     re.IGNORECASE,
@@ -120,23 +136,43 @@ def parse_home_snapshot(html: str) -> HomeSnapshot:
     business_miles_match = (
         _THIS_MONTH_BUSINESS_MILES_RE.search(text)
         or _THIS_MONTH_BUSINESS_MILES_FALLBACK_RE.search(text)
+        or _THIS_MONTH_BUSINESS_MILES_ALT_RE.search(text)
     )
     business_miles_this_month = _parse_number(
         business_miles_match.group(1) if business_miles_match else None
     )
 
-    tax_year_match = _TAX_YEAR_BUSINESS_MILES_RE.search(text)
+    tax_year_match = _TAX_YEAR_BUSINESS_MILES_RE.search(text) or _TAX_YEAR_BUSINESS_MILES_ALT_RE.search(
+        text
+    )
     total_business_miles_tax_year = _parse_number(
         tax_year_match.group(1) if tax_year_match else None
     )
 
-    car_match = _CAR_REG_RE.search(text)
+    car_match = (
+        _CAR_REG_RE.search(text)
+        or _CURRENT_VEHICLE_RE.search(text)
+        or _VEHICLE_REG_RE.search(text)
+    )
     vehicle_registration = car_match.group(1).upper() if car_match else None
 
     opening_odometer_match = _OPENING_ODOMETER_RE.search(text)
     opening_odometer = _parse_number(
         opening_odometer_match.group(1) if opening_odometer_match else None
     )
+
+    if (
+        business_miles_this_month is None
+        or total_business_miles_tax_year is None
+        or vehicle_registration is None
+    ):
+        _LOGGER.debug(
+            "Partial /home parse: month_miles=%s tax_year_miles=%s vehicle=%s text_preview=%s",
+            business_miles_this_month,
+            total_business_miles_tax_year,
+            vehicle_registration,
+            text[:300],
+        )
 
     return HomeSnapshot(
         csrf_token=csrf_token,
