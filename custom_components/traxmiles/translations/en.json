@@ -12,7 +12,7 @@
     },
     "error": {
       "invalid_auth": "Invalid credentials",
-      "cannot_connect": "Cannot connect",
+      "cannot_connect": "Cannot reach traxmiles.co.uk from Home Assistant (check internet, DNS, firewall, or VLAN routing)",
       "unknown": "Unexpected error"
     }
   },

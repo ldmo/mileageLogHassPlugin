@@ -6,6 +6,7 @@ from collections.abc import Mapping
 import logging
 from typing import Any
 
+import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -53,6 +54,10 @@ class TraxmilesConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except TraxmilesAuthError:
                 errors["base"] = "invalid_auth"
             except TraxmilesError:
+                errors["base"] = "cannot_connect"
+            except (aiohttp.ClientError, OSError, TimeoutError) as err:
+                # DNS, TLS, routing, or "network unreachable" from the HA host.
+                _LOGGER.warning("Cannot reach Traxmiles during auth probe: %s", err)
                 errors["base"] = "cannot_connect"
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Unexpected error during auth probe")
