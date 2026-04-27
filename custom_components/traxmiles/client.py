@@ -228,12 +228,27 @@ class TraxmilesClient:
         self._request_lock = asyncio.Lock()
 
     async def login(self) -> None:
-        """Perform login flow and cache CSRF token."""
-        login_page = await self._request("GET", LOGIN_URL)
+        """Perform the full §3.3 login flow from a clean cookie state.
+
+        Always starts by clearing this session's cookie jar so the GET /login
+        step actually returns the anonymous login page (with a fresh
+        ``_token``) rather than a 302 to /home from a still-valid cached
+        cookie. The Node reference does the equivalent by starting each
+        ``loginSession()`` with an empty cookie object.
+        """
+        self._clear_session_cookies()
+        self._csrf_token = None
+        self._last_validated = None
+
+        login_page = await self._request("GET", LOGIN_URL, allow_login_redirect_check=True)
+        if login_page.status != 200:
+            raise TraxmilesAuthError(
+                f"GET /login returned HTTP {login_page.status} (expected 200 with login form)"
+            )
         login_html = await login_page.text()
         csrf_token = extract_csrf_token(login_html)
         if not csrf_token:
-            raise TraxmilesAuthError("Unable to extract login CSRF token")
+            raise TraxmilesAuthError("Unable to extract CSRF token from /login page")
 
         payload = {
             "_token": csrf_token,
@@ -249,11 +264,22 @@ class TraxmilesClient:
                 "Origin": "https://traxmiles.co.uk",
                 "Referer": LOGIN_URL,
             },
+            allow_login_redirect_check=True,
         )
 
-        home_response = await self._request("GET", HOME_URL, allow_login_redirect_check=True)
+        home_response = await self._request(
+            "GET",
+            HOME_URL,
+            headers={"Referer": LOGIN_URL},
+            allow_login_redirect_check=True,
+        )
         if self._is_login_redirect(home_response):
             raise TraxmilesAuthError("Credentials rejected by Traxmiles")
+
+        if home_response.status != 200:
+            raise TraxmilesAuthError(
+                f"Authenticated /home probe returned HTTP {home_response.status}"
+            )
 
         home_html = await home_response.text()
         home_csrf = extract_csrf_token(home_html)
@@ -262,6 +288,15 @@ class TraxmilesClient:
 
         self._csrf_token = home_csrf
         self._last_validated = datetime.now(UTC)
+        _LOGGER.debug("Traxmiles login flow completed; cached fresh CSRF token")
+
+    def _clear_session_cookies(self) -> None:
+        """Drop all cookies on this integration's dedicated session jar."""
+        jar = self._session.cookie_jar
+        try:
+            jar.clear()
+        except Exception:  # pragma: no cover - defensive
+            _LOGGER.debug("Failed to clear Traxmiles cookie jar", exc_info=True)
 
     async def ensure_session(self) -> None:
         """Ensure a valid session exists."""
@@ -321,12 +356,24 @@ class TraxmilesClient:
             return snapshot
 
     async def lock_and_submit(self, *, closing_odometer: float) -> dict[str, str | HomeSnapshot]:
-        """Lock and submit the current record."""
+        """Lock and submit the current record.
+
+        Always performs the full §3.3 login flow first. The plugin may have
+        been dormant since the last hourly poll, the user may have signed in
+        from a browser (Traxmiles only allows one active session per
+        account, see §3.6), or the cached CSRF token may have rotated. A
+        fresh login guarantees we have a valid ``traxmiles_session`` cookie
+        and a current ``_token`` before issuing the destructive POST.
+        """
         if closing_odometer <= 0:
             raise TraxmilesValidationError("Closing odometer must be a positive number")
 
         async with self._request_lock:
-            await self.ensure_session()
+            _LOGGER.debug(
+                "lock_and_submit: forcing full login flow before submit (closing_odometer=%s)",
+                closing_odometer,
+            )
+            await self.login()
             return await self._lock_and_submit_with_retry(
                 closing_odometer=closing_odometer,
                 login_retry=True,
