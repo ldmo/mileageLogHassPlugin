@@ -141,14 +141,7 @@ def parse_home_snapshot(html: str) -> HomeSnapshot:
     edit_lock_url = extract_edit_lock_url(html)
     record_id = parse_record_id(edit_lock_url)
 
-    business_miles_match = (
-        _THIS_MONTH_BUSINESS_MILES_RE.search(text)
-        or _THIS_MONTH_BUSINESS_MILES_FALLBACK_RE.search(text)
-        or _THIS_MONTH_BUSINESS_MILES_ALT_RE.search(text)
-    )
-    business_miles_this_month = _parse_number(
-        business_miles_match.group(1) if business_miles_match else None
-    )
+    business_miles_this_month = _extract_business_miles_this_month(text)
 
     tax_year_match = (
         _TAX_YEAR_BUSINESS_MILES_RE.search(text)
@@ -197,6 +190,15 @@ def parse_home_snapshot(html: str) -> HomeSnapshot:
         raw_html=html,
         fetched_at=datetime.now(UTC),
     )
+
+
+def _extract_business_miles_this_month(text: str) -> float | None:
+    business_miles_match = (
+        _THIS_MONTH_BUSINESS_MILES_RE.search(text)
+        or _THIS_MONTH_BUSINESS_MILES_FALLBACK_RE.search(text)
+        or _THIS_MONTH_BUSINESS_MILES_ALT_RE.search(text)
+    )
+    return _parse_number(business_miles_match.group(1) if business_miles_match else None)
 
 
 def _parse_number(raw: str | None) -> float | None:
@@ -278,6 +280,32 @@ class TraxmilesClient:
 
         home_html = await home_response.text()
         snapshot = parse_home_snapshot(home_html)
+
+        # Some accounts render "business miles this month" only on /log/<id>.
+        if snapshot.business_miles_this_month is None:
+            edit_lock_url = extract_edit_lock_url(home_html)
+            if edit_lock_url:
+                log_url = self._absolute_url(edit_lock_url)
+                try:
+                    log_response = await self._request(
+                        "GET",
+                        log_url,
+                        headers={"Referer": HOME_URL},
+                        allow_login_redirect_check=True,
+                    )
+                    if not self._is_login_redirect(log_response):
+                        log_html = await log_response.text()
+                        log_text = re.sub(
+                            r"\s+",
+                            " ",
+                            BeautifulSoup(log_html, "html.parser").get_text(" ", strip=True),
+                        )
+                        business_miles = _extract_business_miles_this_month(log_text)
+                        if business_miles is not None:
+                            snapshot.business_miles_this_month = business_miles
+                except TraxmilesError:
+                    _LOGGER.debug("Unable to read business miles from /log page", exc_info=True)
+
         self._csrf_token = snapshot.csrf_token
         self._last_validated = datetime.now(UTC)
         return snapshot
@@ -333,3 +361,11 @@ class TraxmilesClient:
             return False
         location = response.headers.get("Location", "")
         return "/login" in location
+
+    @staticmethod
+    def _absolute_url(url: str) -> str:
+        if url.startswith("http://") or url.startswith("https://"):
+            return url
+        if url.startswith("/"):
+            return f"https://traxmiles.co.uk{url}"
+        return f"https://traxmiles.co.uk/{url}"
