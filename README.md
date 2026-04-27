@@ -13,27 +13,27 @@ cards:
     title: Traxmiles
     columns: 4
     entities:
-      - entity: sensor.current_vehicle
+      - entity: sensor.traxmiles_plugin_current_vehicle
         name: Vehicle
-      - entity: sensor.open_record_month
+      - entity: sensor.traxmiles_plugin_open_record_month
         name: Month
-      - entity: sensor.business_miles_this_month
+      - entity: sensor.traxmiles_plugin_business_miles_this_month
         name: This Month
-      - entity: sensor.business_miles_tax_year
+      - entity: sensor.traxmiles_plugin_business_miles_tax_year
         name: Tax Year
-      - entity: sensor.opening_odometer
+      - entity: sensor.traxmiles_plugin_opening_odometer
         name: Opening
-      - entity: binary_sensor.record_locked
+      - entity: binary_sensor.traxmiles_plugin_record_locked
         name: Locked
 
   - type: entities
     title: Lock & Submit Month
     state_color: true
     entities:
-      - entity: number.closing_odometer
+      - entity: number.traxmiles_plugin_closing_odometer
         name: Closing odometer (mi)
         secondary_info: last-changed
-      - entity: switch.auto_submit_allowed
+      - entity: switch.traxmiles_plugin_auto_submit_allowed
         name: Allow auto-submit
       - type: button
         name: Lock & Submit
@@ -42,10 +42,10 @@ cards:
           action: call-service
           service: button.press
           target:
-            entity_id: button.lock_and_submit
+            entity_id: button.traxmiles_plugin_lock_and_submit
 ```
 
-If your Traxmiles entity IDs differ from the defaults above (HA may suffix duplicates), edit each `entity:` value using HA’s entity picker.
+If a sensor entity ID is different on your install (HA may suffix duplicates with `_2` etc.), edit each `entity:` value using HA’s entity picker in the card editor.
 
 ## Submit Service
 
